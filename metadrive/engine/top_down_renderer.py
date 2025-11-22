@@ -29,7 +29,7 @@ def draw_top_down_map_native(
     film_size=(2000, 2000),
     scaling=None,
     semantic_broken_line=True
-) -> Optional[Union[np.ndarray, pygame.Surface]]:
+) -> Optional[Union[np.ndarray, pygame.Surface]]: # type: ignore
     """
     Draw the top_down map on a pygame surface
     Args:
@@ -193,6 +193,8 @@ class TopDownRenderer:
         window=True,
         screen_record=False,
         center_on_map=False,
+        unique_agent_color=False,
+        show_agent_id=False,
     ):
         """
         Launch a top-down renderer for current episode. Usually, it is launched by env.render(mode="topdown") and will
@@ -262,6 +264,8 @@ class TopDownRenderer:
         self.contour = draw_contour
         self.semantic_broken_line = semantic_broken_line
         self.no_window = not window
+        self.unique_agent_color = unique_agent_color
+        self.show_agent_id = show_agent_id
 
         if self.show_agent_name:
             pygame.init()
@@ -338,6 +342,12 @@ class TopDownRenderer:
             key_press = pygame.key.get_pressed()
             if key_press[pygame.K_r]:
                 self.need_reset = True
+
+        # Mapping physical object id (UUID) -> logical agent name (agent0..agent9)
+        self.objectid_to_agentname = {
+            v.id: agent_name
+            for agent_name, v in self.engine.agents.items()
+        }
 
         # Record current target vehicle
         objects = self.engine.get_objects(lambda obj: not is_map_related_instance(obj))
@@ -503,6 +513,82 @@ class TopDownRenderer:
             ObjectGraphics.display(
                 object=v, surface=self._frame_canvas, heading=h, color=c, draw_contour=self.contour, contour_width=2
             )
+
+        # print("DEBUG BEGIN FRAME -----------")
+        # for obj in self.history_objects[i]:
+        #     print("Object:", obj.name, " type:", obj.type, "index", obj.index)
+        #     if obj.type == MetaDriveType.VEHICLE:
+        #         print(dir(obj))
+        # print("DEBUG END FRAME -----------")
+
+
+        # ===== PATCH FOR AGENT COLOR + ID DISPLAY =====
+
+        if self.unique_agent_color or self.show_agent_id:
+            # Get pixel converter
+            pos2pix = self._frame_canvas.pos2pix
+
+            # Draw after default vehicle rectangles (so our override is on top)
+            for obj in self.history_objects[i]:
+
+                if not hasattr(obj, "name"):
+                    continue
+
+                obj_uuid = obj.name
+                # we only treat RL agents (agent0, agent1, ...)
+                if obj_uuid in self.objectid_to_agentname:
+                    agent_name = self.objectid_to_agentname[obj_uuid]
+                    agent_idx = int(agent_name[5:])  # "agent0" -> 0
+
+                    # ---------- override color ----------
+                    if self.unique_agent_color:
+                        # Your fixed palette:
+                        agent_colors = [
+                            (255,   0,   0),   # Red
+                            (  0, 255,   0),   # Green
+                            (  0, 128, 255),   # Light Blue / Sky Blue
+                            (255, 255,   0),   # Yellow
+                            (255,   0, 255),   # Magenta
+                            (  0, 255, 255),   # Cyan
+                            (128, 128, 128),   # Gray
+                            (255, 128,   0),   # Orange
+                            (128,   0, 255),   # Violet / Purple
+                            (  0,   0, 255),   # Blue
+                        ]
+
+                        override_color = agent_colors[agent_idx % len(agent_colors)]
+                    else:
+                        override_color = obj.top_down_color
+
+                    # redraw rectangle with override color
+                    ObjectGraphics.display(
+                        object=obj,
+                        surface=self._frame_canvas,
+                        heading=obj.heading_theta,
+                        color=override_color,
+                        draw_contour=True,
+                        contour_width=2
+                    )
+
+                    # ---------- draw ID text ----------
+                    if self.show_agent_id:
+                        px, py = pos2pix(obj.position[0], obj.position[1])
+                        # Ensure pygame initialized
+                        if not pygame.get_init():
+                            pygame.init()
+
+                        # Create font if not created
+                        if self.pygame_font is None:
+                            self.pygame_font = pygame.font.SysFont("Arial", 20)
+
+                        # Draw black text
+                        label_color = (0, 0, 0)
+                        label = self.pygame_font.render(str(agent_idx), True, label_color)
+                        rect = label.get_rect(center=(px, py - 5))
+                        self._frame_canvas.blit(label, rect)
+
+        # ===== END PATCH =====
+
 
         if not hasattr(self, "_deads"):
             self._deads = []
